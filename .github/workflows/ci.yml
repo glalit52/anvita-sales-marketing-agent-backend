@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+    env:
+      ANVITA_DATABASE_URL: postgresql+asyncpg://anvita:anvita@localhost:5432/anvita_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Create application role (non-superuser, so RLS is enforced)
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -f deploy/postgres-init.sql
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+      - name: Migrations match the models
+        run: |
+          ANVITA_DATABASE_URL=postgresql+asyncpg://anvita:anvita@localhost:5432/anvita alembic upgrade head
+          ANVITA_DATABASE_URL=postgresql+asyncpg://anvita:anvita@localhost:5432/anvita alembic check
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t anvita-api .
