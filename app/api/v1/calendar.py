@@ -205,6 +205,8 @@ async def update_appointment(
             contact = await db.get(Contact, appt.contact_id)
             if contact and contact.stage in ("new", "qualified", "booked"):
                 contact.stage = "customer"
+        if appt.status == "no-show":
+            emit(db, principal.org_id, "appointment.no_show", scheduling.appointment_event(appt))
     if "notes" in changes:
         appt.notes = changes["notes"]
     await db.commit()

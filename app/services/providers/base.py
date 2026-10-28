@@ -82,6 +82,19 @@ def resolve(kind: str, preferred: str | None = None, overrides: dict[str, str] |
     )
 
 
+def resolve_all(kind: str, overrides: dict[str, str] | None = None) -> list[Any]:
+    """Every configured provider of a kind, in registry order (for waterfalls like enrichment). Falls back to
+    the dev sample; an empty list means nothing is configured."""
+    out = []
+    for spec in _REGISTRY.get(kind, []):
+        creds = spec.credentials(overrides)
+        if creds is not None and spec.factory is not None:
+            out.append(spec.factory(creds))
+    if not out and samples_enabled() and kind in _SAMPLES:
+        out.append(_SAMPLES[kind]())
+    return out
+
+
 def is_sample(adapter: Any) -> bool:
     return type(adapter).__module__.endswith(".samples")
 

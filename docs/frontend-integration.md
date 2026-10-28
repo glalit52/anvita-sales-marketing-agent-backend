@@ -36,9 +36,19 @@ maps to the API, and where the API's shapes differ from `apps/web/src/lib/mock/*
 | Booking page (`/book/[slug]`) | `public.business`, `slotsFor` | `GET /public/orgs/{slug}`, `GET /public/orgs/{slug}/availability`, `POST /public/orgs/{slug}/bookings` |
 | Pay page (`/pay/[id]`) | `public.payLinks` | `GET /public/pay/{token}`. In test mode, `POST /public/pay/{token}/test-confirm`. With Razorpay, redirect to the provider checkout. |
 | Webchat widget | `components/public/webchat-widget.tsx` | `POST /public/webchat/{slug}/sessions` → widget token; `POST /public/webchat/messages` (send `clientId` so retries de-dupe); poll `GET /public/webchat/messages?after=<createdAt>` |
+| Reviews (`/reviews`) | `growth.reviews`, stats | `GET /reviews?platform&status&rating`, `GET /reviews/stats`, `POST /reviews/{id}/draft|reply`, `GET/PUT /reviews/settings`, `GET /review-requests`, `GET /review-requests/funnel`, `POST /review-requests` |
+| Feedback page (`/feedback/[id]`) | `public` | `GET /public/feedback/{token}`, `POST /rate`, `POST /private`, `POST /posted` |
+| Campaigns (`/campaigns`) | `outbound.campaigns`, `waTemplates`, `aiSegments` | `/segments` (+ `/preview`), `/templates`, `/campaigns` (+ `/launch`, `/cancel`, `/audience`) |
+| Sequences (`/sequences`) | `outbound.sequences` | `/sequences`, `POST /{id}/status?status=active|paused`, `/{id}/enroll`, `/{id}/enrollments`, `/sequences-meta/mailboxes` |
+| Prospecting (`/prospecting`) | `outbound.*` | `POST /prospecting/plan` → `POST /prospecting/searches` (202, runs in the worker; poll the search) → `GET /searches/{id}/rows`, `POST /enrich`, `POST /columns`, `POST /add-to-crm` |
+| Marketing (`/marketing`) | `growth.*`, `demand-gen.*` | `/marketing/ads/*`, `/marketing/content`, `/marketing/social`, `/marketing/landing-pages`, `/marketing/aeo/*`, `/marketing/campaigns`, `/marketing/approvals` |
+| Automations (`/automations`) | `platform.workflows` | `/automations`, `/automations/meta`, `/automations/runs`, `/{id}/toggle?enabled=`, `/from-template/{id}` |
+| Analytics (`/analytics`) | `growth.overviewKpis`, … | `/analytics/overview?range=`, `/revenue-by-source`, `/revenue-weekly`, `/attribution?model=`, `/funnel`, `/ai`, `/team`, `/outbound` |
+| Integrations, billing, API (`/integrations`, `/settings`) | `platform.*` | `/integrations` (+ `/connect`, `/disconnect`), `/billing`, `/api-keys`, `/webhook-endpoints`, `/data-requests`, `/me/notification-preferences`, `/booking-settings` |
 
-## Not yet backed by the API
+## Paid APIs
 
-These screens keep using mock data until their phase lands (see the README roadmap): Prospecting, Sequences,
-Campaigns, Marketing (ads, SEO, social, AEO, landing pages), Reviews, Analytics attribution, Automations,
-Integrations, Billing and the Help centre.
+Screens that need a paid data source (Apollo, Google Places, ad platforms, Google Business Profile, answer
+engines, social publishing) call a provider slot. In development, sample providers return deterministic
+data so every screen works; in production an unconfigured slot answers `501 provider_not_configured` with
+`details.options` listing the vendors and env vars. Show that as a "Connect X" prompt rather than an error.

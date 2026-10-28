@@ -144,3 +144,25 @@ class FeedbackRateOut(Schema):
 class FeedbackPrivateIn(Schema):
     issues: list[str] = Field(default_factory=list, max_length=10)
     text: str | None = Field(default=None, max_length=4000)
+
+
+class LandingPublic(Schema):
+    business_name: str
+    name: str
+    variant: str
+    sections: list[dict[str, Any]]
+
+
+class LandingSubmitIn(Schema):
+    name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=32)
+    email: EmailStr | None = None
+    message: str | None = Field(default=None, max_length=2000)
+    variant: str = "A"
+    marketing_consent: bool = False
+    utm: dict[str, str] = Field(default_factory=dict)
+
+
+class LandingSubmitOut(Schema):
+    ok: bool
+    message: str

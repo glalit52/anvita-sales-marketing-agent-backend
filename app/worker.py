@@ -10,8 +10,9 @@ import logging
 import signal
 import uuid
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 
@@ -29,13 +30,17 @@ from app.models import (
     KnowledgeSource,
     Message,
     Organization,
+    ProspectSearch,
     ReviewRequest,
+    Service,
+    SocialPost,
     WebhookEndpoint,
 )
-from app.services import campaigns, reviews, sequences
+from app.services import automations, campaigns, marketing, prospecting, reviews, sequences
 from app.services.agent.runtime import run_reply
 from app.services.channels import SendError, adapter_for
 from app.services.events import emit
+from app.services.inbox import create_outbound, open_conversation, window_open
 from app.services.knowledge import ingest_source
 from app.services.webhooks_out import PUBLIC_EVENTS, deliver, fanout
 
@@ -165,6 +170,104 @@ async def on_kb_source(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
         await db.commit()
 
 
+@handles("prospect_search.run")
+async def on_prospect_search(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        search = await db.get(ProspectSearch, uuid.UUID(payload["search_id"]), with_for_update=True)
+        org = await db.get(Organization, org_id)
+        if search is None or org is None:
+            return
+        try:
+            await prospecting.run(db, org, search)
+        except Exception as e:  # noqa: BLE001 - a failed search is shown on the search, not retried forever
+            await db.rollback()
+            search = await db.get(ProspectSearch, uuid.UUID(payload["search_id"]))
+            if search is None:
+                return
+            search.status, search.error = "failed", (getattr(e, "message", None) or str(e))[:500]
+        await db.commit()
+
+
+@handles("prospect_search.ai_column")
+async def on_ai_column(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        search = await db.get(ProspectSearch, uuid.UUID(payload["search_id"]))
+        org = await db.get(Organization, org_id)
+        if search and org:
+            await prospecting.answer_column(db, org, search, payload["column_id"])
+            await db.commit()
+
+
+@handles("social.publish")
+async def on_social_publish(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        post = await db.get(SocialPost, uuid.UUID(payload["post_id"]), with_for_update=True)
+        # Skip if unscheduled, already published, or rescheduled since this event was queued.
+        if post is None or post.status != "scheduled":
+            return
+        if post.scheduled_at and payload.get("at") and datetime.fromisoformat(str(payload["at"])) != post.scheduled_at:
+            return
+        await marketing.publish_post(db, post)
+        await db.commit()
+
+
+@handles("workflow.step")
+async def on_workflow_step(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        await automations.step(db, uuid.UUID(payload["run_id"]))
+        await db.commit()
+
+
+@handles("appointment.reminder")
+async def on_appointment_reminder(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        appt = await db.get(Appointment, uuid.UUID(payload["appointment_id"]))
+        org = await db.get(Organization, org_id)
+        if appt is None or org is None or appt.status in ("cancelled", "completed", "no-show"):
+            return
+        if payload.get("starts_at") and datetime.fromisoformat(str(payload["starts_at"])) != appt.starts_at:
+            return  # rescheduled: the new booking queued its own reminders
+        contact = await db.get(Contact, appt.contact_id)
+        service = await db.get(Service, appt.service_id)
+        if contact is None or not (contact.phone or contact.email):
+            return
+        cfg = (org.settings or {}).get("booking") or {}
+        channel = cfg.get("reminder_channel") or contact.channel or ("whatsapp" if contact.phone else "email")
+        if channel in ("whatsapp", "sms") and not contact.phone:
+            channel = "email"
+        if channel == "email" and not contact.email:
+            channel = "sms"
+        when = appt.starts_at.astimezone(ZoneInfo(org.timezone)).strftime("%a %d %b, %I:%M %p")
+        first = (contact.name or "").split(" ")[0] or "there"
+        body = (
+            f"Hi {first}, a reminder of your {service.name if service else 'appointment'} at {org.name} on {when}. "
+            "Reply C to confirm or R to reschedule."
+        )
+        conv = await open_conversation(db, org_id, contact, channel, None)
+        await create_outbound(
+            db,
+            conv,
+            body=body,
+            author_type="ai",
+            author_name="Reminder",
+            pause_ai=False,
+            idempotency_key=f"reminder:{appt.id}:{payload.get('hours')}",
+            template=None
+            if channel != "whatsapp" or window_open(conv)
+            else {"name": "appointment_reminder", "language": "en", "params": [first, when]},
+        )
+        await db.commit()
+
+
+async def start_automations(event: Event) -> None:
+    """Start workflow runs for this event, once (first attempt), like webhook fan-out."""
+    if event.org_id is None or event.attempts != 1 or event.type not in automations.EVENT_TRIGGERS:
+        return
+    async with tenant_session(event.org_id) as db:
+        await automations.on_event(db, event.org_id, event.type, event.payload, event.id)
+        await db.commit()
+
+
 async def claim(batch: int) -> list[Event]:
     async with tenant_session(bypass_rls=True) as db:
         now = utcnow()
@@ -218,6 +321,10 @@ async def process(event: Event) -> None:
         await publish_to_webhooks(event)
     except Exception:  # noqa: BLE001 - webhook fan-out must never block the domain handler
         log.exception("webhook fanout failed", extra={"data": {"event": event.type}})
+    try:
+        await start_automations(event)
+    except Exception:  # noqa: BLE001 - a broken workflow must never block the domain handler
+        log.exception("automation dispatch failed", extra={"data": {"event": event.type}})
     handler = HANDLERS.get(event.type)
     if handler is None:
         await finish(event.id)  # nothing else subscribes to this event type

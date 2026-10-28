@@ -6,9 +6,9 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
 from app.api.deps import DB, AdminPrincipal, CurrentPrincipal, ManagerPrincipal
-from app.core.errors import NotFound
+from app.core.errors import AppError, NotFound
 from app.db.base import utcnow
-from app.models import AgentRun, AgentVersion, Appointment, EscalationRule, KnowledgeSource, Playbook
+from app.models import AgentRun, AgentVersion, Appointment, EscalationRule, KnowledgeSource, Playbook, ScenarioTest
 from app.schemas.agent import (
     AgentConfigOut,
     AgentConfigUpdate,
@@ -29,6 +29,7 @@ from app.schemas.agent import (
     SandboxOut,
 )
 from app.schemas.common import Ok
+from app.schemas.marketing import ChannelModeIn, ScenarioIn, ScenarioOut
 from app.services import knowledge
 from app.services.agent.runtime import ensure_agent_config, sandbox_reply
 from app.services.audit import audit
@@ -365,3 +366,205 @@ async def stats(principal: CurrentPrincipal, db: DB, days: int = Query(30, ge=1,
         avg_latency_ms=int(row[3]),
         cost_usd=Decimal(row[4]),
     )
+
+
+# ---- Scenario tests, QA queue, knowledge gaps, channel modes ----------------------------------------
+
+
+async def _run_scenario(
+    db: DB, principal: CurrentPrincipal, scenario_id: uuid.UUID, messages: list, channel: str, exp: dict
+) -> None:
+    gen, ctx = await sandbox_reply(db, principal.org, messages, channel=channel)
+    reply = gen.text or ""
+    tools_called = [c.get("tool") for c in ctx.calls]
+    escalated = ctx.escalation is not None
+    await db.rollback()  # the sandbox's bookings / tasks never persist
+    await db.refresh(principal.org)  # rollback expired it; later scenarios need it loaded
+    detail = []
+    for phrase in exp.get("mustInclude") or []:
+        detail.append({"check": f"Mentions “{phrase}”", "pass": phrase.lower() in reply.lower()})
+    for phrase in exp.get("mustNotInclude") or []:
+        detail.append({"check": f"Never says “{phrase}”", "pass": phrase.lower() not in reply.lower()})
+    if exp.get("tool"):
+        detail.append({"check": f"Calls {exp['tool']}", "pass": exp["tool"] in tools_called})
+    if "escalate" in exp:
+        detail.append(
+            {
+                "check": "Escalates" if exp["escalate"] else "Doesn't escalate",
+                "pass": escalated == bool(exp["escalate"]),
+            }
+        )
+    if not reply and not escalated:
+        detail.append({"check": "Replies", "pass": False})
+    t = await db.get(ScenarioTest, scenario_id)
+    assert t is not None
+    t.last_reply, t.last_detail, t.last_run_at = reply, detail, utcnow()
+    t.last_status = "pass" if all(d["pass"] for d in detail) else "fail"
+
+
+@router.get("/scenarios", response_model=list[ScenarioOut])
+async def list_scenarios(principal: CurrentPrincipal, db: DB) -> list[ScenarioOut]:
+    rows = await db.scalars(
+        select(ScenarioTest).where(ScenarioTest.org_id == principal.org_id).order_by(ScenarioTest.created_at)
+    )
+    return [ScenarioOut.model_validate(r) for r in rows]
+
+
+@router.post("/scenarios", response_model=ScenarioOut, status_code=201)
+async def create_scenario(body: ScenarioIn, principal: ManagerPrincipal, db: DB) -> ScenarioOut:
+    t = ScenarioTest(org_id=principal.org_id, last_detail=[], **body.model_dump(by_alias=False))
+    db.add(t)
+    await db.commit()
+    return ScenarioOut.model_validate(t)
+
+
+@router.put("/scenarios/{scenario_id}", response_model=ScenarioOut)
+async def update_scenario(scenario_id: uuid.UUID, body: ScenarioIn, principal: ManagerPrincipal, db: DB) -> ScenarioOut:
+    t = await db.get(ScenarioTest, scenario_id)
+    if t is None:
+        raise NotFound("Scenario not found")
+    for k, v in body.model_dump(by_alias=False).items():
+        setattr(t, k, v)
+    await db.commit()
+    return ScenarioOut.model_validate(t)
+
+
+@router.delete("/scenarios/{scenario_id}", response_model=Ok)
+async def delete_scenario(scenario_id: uuid.UUID, principal: ManagerPrincipal, db: DB) -> Ok:
+    t = await db.get(ScenarioTest, scenario_id)
+    if t is None:
+        raise NotFound("Scenario not found")
+    await db.delete(t)
+    await db.commit()
+    return Ok()
+
+
+@router.post("/scenarios/run", response_model=list[ScenarioOut])
+async def run_scenarios(principal: ManagerPrincipal, db: DB, scenario_id: uuid.UUID | None = None) -> list[ScenarioOut]:
+    """Replay scenario conversations against the current agent config (e.g. before publishing)."""
+    q = select(ScenarioTest).where(ScenarioTest.org_id == principal.org_id)
+    if scenario_id:
+        q = q.where(ScenarioTest.id == scenario_id)
+    tests = [
+        (t.id, list(t.messages), t.channel, dict(t.expect or {}))
+        for t in (await db.scalars(q.order_by(ScenarioTest.created_at).limit(50))).all()
+    ]
+    ids = [t[0] for t in tests]
+    await db.commit()
+    for t in tests:
+        await _run_scenario(db, principal, *t)
+        await db.commit()
+    rows = await db.scalars(select(ScenarioTest).where(ScenarioTest.id.in_(ids)).order_by(ScenarioTest.created_at))
+    return [ScenarioOut.model_validate(r) for r in rows]
+
+
+@router.get("/qa", response_model=list[dict])
+async def qa_queue(
+    principal: CurrentPrincipal, db: DB, reviewed: bool = False, limit: int = Query(30, le=100)
+) -> list[dict]:
+    """Recent AI replies for a human to spot-check, with the customer message they answered."""
+    from app.models import Contact, Conversation, Message
+
+    q = (
+        select(AgentRun, Message.body, Contact.name, Conversation.channel_type)
+        .outerjoin(Message, Message.id == AgentRun.trigger_message_id)
+        .outerjoin(Conversation, Conversation.id == AgentRun.conversation_id)
+        .outerjoin(Contact, Contact.id == Conversation.contact_id)
+        .where(AgentRun.org_id == principal.org_id, AgentRun.outcome.in_(["replied", "drafted"]))
+        .where(AgentRun.qa.is_not(None) if reviewed else AgentRun.qa.is_(None))
+        .order_by(AgentRun.created_at.desc())
+        .limit(limit)
+    )
+    out = []
+    for run, question, contact, channel in await db.execute(q):
+        reply = await db.scalar(
+            select(Message.body)
+            .where(
+                Message.conversation_id == run.conversation_id,
+                Message.author_type == "ai",
+                Message.created_at >= run.created_at,
+            )
+            .order_by(Message.created_at)
+            .limit(1)
+        )
+        out.append(
+            {
+                "runId": str(run.id),
+                "conversationId": str(run.conversation_id) if run.conversation_id else None,
+                "contact": contact,
+                "channel": channel,
+                "question": question,
+                "reply": reply,
+                "tools": [c.get("tool") or c.get("name") for c in run.tool_calls or []],
+                "qa": run.qa,
+                "createdAt": run.created_at.isoformat(),
+            }
+        )
+    return out
+
+
+@router.post("/qa/{run_id}", response_model=Ok)
+async def rate_reply(run_id: uuid.UUID, body: dict, principal: CurrentPrincipal, db: DB) -> Ok:
+    run = await db.get(AgentRun, run_id)
+    if run is None:
+        raise NotFound("Run not found")
+    rating = body.get("rating")
+    if rating not in ("good", "bad"):
+        raise AppError("rating must be good or bad", code="invalid_rating")
+    run.qa = {
+        "rating": rating,
+        "note": (body.get("note") or "")[:1000],
+        "by": str(principal.user_id),
+        "at": utcnow().isoformat(),
+    }
+    if rating == "bad" and body.get("correctAnswer") and body.get("question"):
+        await knowledge.add_faq(db, principal.org_id, str(body["question"])[:500], str(body["correctAnswer"])[:4000])
+    await db.commit()
+    return Ok()
+
+
+@router.get("/knowledge-gaps", response_model=list[dict])
+async def knowledge_gaps(principal: CurrentPrincipal, db: DB) -> list[dict]:
+    from app.services.analytics import knowledge_gaps as gaps
+
+    return [{**g, "lastAsked": g["lastAsked"].isoformat()} for g in await gaps(db, principal.org_id)]
+
+
+@router.post("/knowledge-gaps/answer", response_model=KnowledgeSourceOut, status_code=201)
+async def answer_gap(body: dict, principal: ManagerPrincipal, db: DB) -> KnowledgeSourceOut:
+    q, a = str(body.get("question") or "").strip(), str(body.get("answer") or "").strip()
+    if not q or not a:
+        raise AppError("question and answer are required", code="invalid_faq")
+    src = await knowledge.add_faq(db, principal.org_id, q[:500], a[:4000])
+    await db.commit()
+    return KnowledgeSourceOut.model_validate(src)
+
+
+@router.get("/channel-modes", response_model=dict)
+async def channel_modes(principal: CurrentPrincipal, db: DB) -> dict:
+    from app.models import Channel
+
+    config = await ensure_agent_config(db, principal.org)
+    modes = {c: config.default_mode for c in ("whatsapp", "sms", "email", "webchat", "instagram", "facebook")}
+    modes.update((config.guardrails or {}).get("channel_modes") or {})
+    for ch in (await db.scalars(select(Channel).where(Channel.org_id == principal.org_id))).all():
+        modes[ch.type] = ch.agent_mode
+    await db.commit()
+    return modes
+
+
+@router.put("/channel-modes", response_model=dict)
+async def put_channel_modes(body: ChannelModeIn, principal: ManagerPrincipal, db: DB) -> dict:
+    from app.models import Channel
+
+    config = await ensure_agent_config(db, principal.org)
+    config.guardrails = {
+        **(config.guardrails or {}),
+        "channel_modes": {**((config.guardrails or {}).get("channel_modes") or {}), **body.modes},
+    }
+    for ch in (await db.scalars(select(Channel).where(Channel.org_id == principal.org_id))).all():
+        if ch.type in body.modes:
+            ch.agent_mode = body.modes[ch.type]
+    audit(db, principal.org_id, "agent.channel_modes", actor_id=principal.user_id, data=body.modes)
+    await db.commit()
+    return await channel_modes(principal, db)

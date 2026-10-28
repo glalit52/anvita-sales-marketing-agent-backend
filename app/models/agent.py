@@ -112,4 +112,6 @@ class AgentRun(IdMixin, TenantMixin, Base):
     reason: Mapped[str | None] = mapped_column(String(300))
     latency_ms: Mapped[int] = mapped_column(default=0)
     error: Mapped[str | None] = mapped_column(Text)
+    # Human QA review of the reply: {"rating": "good" | "bad", "note", "by", "at"}
+    qa: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), default=utcnow)

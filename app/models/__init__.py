@@ -23,6 +23,20 @@ from app.models.growth import (
     SequenceStep,
 )
 from app.models.inbox import Channel, Conversation, Message
+from app.models.marketing import (
+    AdRecommendation,
+    AeoPrompt,
+    Approval,
+    ContentItem,
+    DgCampaign,
+    LandingPage,
+    ProspectRow,
+    ProspectSearch,
+    ScenarioTest,
+    SocialPost,
+    Workflow,
+    WorkflowRun,
+)
 from app.models.ops import Event, Notification
 from app.models.org import AuditLog, Invite, Location, Membership, Organization, RefreshToken, User
 from app.models.payments import Payment
@@ -37,6 +51,18 @@ from app.models.platform import (
 from app.models.scheduling import Appointment, Provider, Service
 
 __all__ = [
+    "AdRecommendation",
+    "AeoPrompt",
+    "Approval",
+    "ContentItem",
+    "DgCampaign",
+    "LandingPage",
+    "ProspectRow",
+    "ProspectSearch",
+    "ScenarioTest",
+    "SocialPost",
+    "Workflow",
+    "WorkflowRun",
     "Campaign",
     "CampaignRecipient",
     "Enrollment",

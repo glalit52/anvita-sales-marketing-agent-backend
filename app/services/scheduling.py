@@ -79,7 +79,10 @@ async def availability(
     for pid, s, e in busy_rows:
         busy.setdefault(pid, []).append((s, e))
 
-    earliest = utcnow() + timedelta(minutes=MIN_LEAD_MINUTES)
+    booking = (org.settings or {}).get("booking") or {}
+    notice = max(MIN_LEAD_MINUTES, float(booking.get("min_notice_hours", 0)) * 60)
+    earliest = utcnow() + timedelta(minutes=notice)
+    latest = utcnow() + timedelta(days=int(booking.get("max_days_ahead", 365)))
     duration = timedelta(minutes=service.duration_min)
     results: list[SlotResult] = []
     for offset in range(days):
@@ -94,7 +97,7 @@ async def availability(
             candidates = [p for p in providers if _offers(p, service.id, loc.id)]
             while cursor + duration <= close:
                 end = cursor + duration
-                if cursor >= earliest:
+                if earliest <= cursor <= latest:
                     for p in candidates:
                         if all(not (cursor < e and s < end) for s, e in busy.get(p.id, [])):
                             results.append(SlotResult(cursor.astimezone(UTC), end.astimezone(UTC), p.id, loc.id))
@@ -175,7 +178,23 @@ async def book(
             raise Conflict("The provider is already booked at that time", code="slot_taken") from e
         raise
     emit(db, org.id, "appointment.booked", appointment_event(appt))
+    schedule_reminders(db, org, appt)
     return appt
+
+
+def schedule_reminders(db: AsyncSession, org: Organization, appt: Appointment) -> None:
+    """Queue reminder messages (Settings → Booking → reminders, hours before the visit)."""
+    cfg = (org.settings or {}).get("booking") or {}
+    for hours in cfg.get("reminder_hours", [24, 2]):
+        delay = (appt.starts_at - timedelta(hours=float(hours)) - utcnow()).total_seconds()
+        if delay > 0:
+            emit(
+                db,
+                org.id,
+                "appointment.reminder",
+                {"appointment_id": appt.id, "hours": hours, "starts_at": appt.starts_at},
+                delay_seconds=delay,
+            )
 
 
 def appointment_event(a: Appointment) -> dict:

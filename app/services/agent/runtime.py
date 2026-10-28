@@ -295,7 +295,11 @@ async def run_reply(
     assert org is not None and contact is not None
     config = await ensure_agent_config(db, org)
     channel = await db.get(Channel, conv.channel_id) if conv.channel_id else None
-    mode = channel.agent_mode if channel else config.default_mode
+    mode = (
+        channel.agent_mode
+        if channel
+        else ((config.guardrails or {}).get("channel_modes") or {}).get(conv.channel_type, config.default_mode)
+    )
 
     history = list(
         (

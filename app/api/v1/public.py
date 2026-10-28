@@ -18,6 +18,7 @@ from app.models import (
     AgentConfig,
     Contact,
     Conversation,
+    LandingPage,
     Location,
     Message,
     Organization,
@@ -31,6 +32,9 @@ from app.schemas.public import (
     FeedbackPrivateIn,
     FeedbackRateIn,
     FeedbackRateOut,
+    LandingPublic,
+    LandingSubmitIn,
+    LandingSubmitOut,
     PublicBookingIn,
     PublicBookingOut,
     PublicBusiness,
@@ -45,8 +49,9 @@ from app.schemas.public import (
     WebchatSessionOut,
 )
 from app.schemas.scheduling import Slot
-from app.services import reviews, scheduling
+from app.services import marketing, reviews, scheduling
 from app.services.contacts import get_or_create_contact, set_consent
+from app.services.events import emit
 from app.services.inbox import open_conversation, record_inbound
 from app.services.notify import notify
 from app.services.payments import create_payment, mark_paid, pay_url
@@ -240,6 +245,83 @@ async def test_confirm(token: str, body: TestConfirmIn, db: DB) -> PublicPayment
     await mark_paid(db, p, method=body.method, provider_payment_id=f"test_pay_{uuid.uuid4().hex[:12]}")
     await db.commit()
     return await get_pay(token, db)
+
+
+# ---- Landing pages ---------------------------------------------------------------------------------
+
+
+async def _page(db: DB, slug: str, page_slug: str) -> tuple[LandingPage, Organization]:
+    org = await _org(db, slug)
+    page = await db.scalar(
+        select(LandingPage).where(
+            LandingPage.org_id == org.id, LandingPage.slug == page_slug, LandingPage.status.in_(["live", "testing"])
+        )
+    )
+    if page is None:
+        raise NotFound("Page not found")
+    return page, org
+
+
+@router.get("/pages/{slug}/{page_slug}", response_model=LandingPublic, dependencies=[Throttled])
+async def landing(slug: str, page_slug: str, db: DB, visitor: str = Query("anon", max_length=64)) -> LandingPublic:
+    page, org = await _page(db, slug, page_slug)
+    variant = marketing.pick_variant(page, visitor)
+    page.views = {**(page.views or {}), variant: int((page.views or {}).get(variant, 0)) + 1}
+    await db.commit()
+    return LandingPublic(
+        business_name=org.name,
+        name=page.name,
+        variant=variant,
+        sections=marketing.render_sections(page, variant),
+    )
+
+
+@router.post(
+    "/pages/{slug}/{page_slug}/submit", response_model=LandingSubmitOut, status_code=201, dependencies=[Throttled]
+)
+async def landing_submit(slug: str, page_slug: str, body: LandingSubmitIn, db: DB) -> LandingSubmitOut:
+    page, org = await _page(db, slug, page_slug)
+    if not (body.phone or body.email):
+        raise AppError("Phone or email is required", code="contact_required")
+    contact, created = await get_or_create_contact(
+        db,
+        org.id,
+        name=body.name,
+        phone=body.phone,
+        email=body.email,
+        channel="whatsapp" if body.phone else "email",
+        source=f"landing:{page.slug}",
+        country=org.country,
+    )
+    if created and body.utm:
+        contact.utm = {k: str(v)[:200] for k, v in body.utm.items()}
+    if body.marketing_consent:
+        for ch in ("whatsapp", "sms") if contact.phone else ():
+            await set_consent(db, org.id, contact.id, channel=ch, status="opted_in", source=f"Landing page {page.slug}")
+        if contact.email:
+            await set_consent(
+                db, org.id, contact.id, channel="email", status="opted_in", source=f"Landing page {page.slug}"
+            )
+    v = body.variant if body.variant in ("A", "B") else "A"
+    page.conversions = {**(page.conversions or {}), v: int((page.conversions or {}).get(v, 0)) + 1}
+    emit(
+        db,
+        org.id,
+        "form.submitted",
+        {"contact_id": contact.id, "page_id": page.id, "campaign_id": page.campaign_id, "message": body.message},
+    )
+    notify(
+        db,
+        org.id,
+        tab="system",
+        icon="campaign",
+        title=f"New lead from {page.name}",
+        body=(body.message or "")[:300],
+        contact_id=contact.id,
+        link=f"/contacts/{contact.id}",
+    )
+    await db.commit()
+    return LandingSubmitOut(ok=True, message="Thanks! We'll be in touch shortly.")
 
 
 # ---- Review feedback page ----------------------------------------------------------------------------

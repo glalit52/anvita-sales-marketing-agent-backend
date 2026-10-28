@@ -18,6 +18,7 @@ from app.services.providers.base import (
     is_sample,
     provider_status,
     resolve,
+    resolve_all,
     samples_enabled,
     specs,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "is_sample",
     "provider_status",
     "resolve",
+    "resolve_all",
     "samples_enabled",
     "specs",
 ]

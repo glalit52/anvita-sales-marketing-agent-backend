@@ -326,6 +326,25 @@ async def resolve_for_org(db: AsyncSession, org_id: uuid.UUID, kind: str) -> Any
     return providers.resolve(kind, overrides=overrides)
 
 
+async def _overrides(db: AsyncSession, org_id: uuid.UUID, kind: str) -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for spec in providers.specs(kind):
+        overrides.update(await org_credentials(db, org_id, spec.id))
+    return overrides
+
+
+async def resolve_all_for_org(db: AsyncSession, org_id: uuid.UUID, kind: str) -> list[Any]:
+    return providers.resolve_all(kind, overrides=await _overrides(db, org_id, kind))
+
+
+async def try_resolve_for_org(db: AsyncSession, org_id: uuid.UUID, kind: str) -> Any | None:
+    """Like resolve_for_org, but None instead of 501 for optional data sources."""
+    try:
+        return await resolve_for_org(db, org_id, kind)
+    except providers.ProviderNotConfigured:
+        return None
+
+
 async def catalog_status(db: AsyncSession, org_id: uuid.UUID) -> list[dict[str, Any]]:
     conns = {
         c.integration_id: c

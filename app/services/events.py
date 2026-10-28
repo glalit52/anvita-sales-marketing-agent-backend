@@ -1,5 +1,5 @@
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +22,17 @@ def emit(
     event = Event(
         org_id=org_id,
         type=type,
-        payload={k: str(v) if isinstance(v, uuid.UUID) else v for k, v in (payload or {}).items()},
+        payload={k: _plain(v) for k, v in (payload or {}).items()},
         dedupe_key=dedupe_key,
         available_at=utcnow() + timedelta(seconds=delay_seconds),
     )
     db.add(event)
     return event
+
+
+def _plain(v: Any) -> Any:
+    if isinstance(v, uuid.UUID):
+        return str(v)
+    if isinstance(v, datetime):
+        return v.isoformat()
+    return v

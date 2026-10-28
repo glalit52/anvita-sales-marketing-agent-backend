@@ -95,7 +95,16 @@ org currency. Timestamps are ISO 8601 UTC.
 | Payments | `/payments`, `/payments/summary`, `/{id}/mark-paid`, `/{id}/cancel`, `/{id}/refund` |
 | AI Agent | `/agent/config`, `/agent/publish`, `/agent/versions`, `/agent/knowledge` (+ `/faqs`, `/search`), `/agent/playbooks`, `/agent/escalation-rules`, `/agent/sandbox`, `/agent/runs`, `/agent/stats` |
 | Operate | `/channels`, `/notifications`, `/dashboard` |
-| Public | `/public/orgs/{slug}` (+ `/availability`, `/bookings`), `/public/pay/{token}`, `/public/webchat/...` |
+| Reviews | `/reviews` (+ `/stats`, `/sync`, `/{id}/draft`, `/{id}/reply`, `/settings`), `/review-requests` (+ `/funnel`) |
+| Campaigns | `/segments` (+ `/preview`), `/templates` (+ `/submit`, `/status`), `/campaigns` (+ `/audience`, `/launch`, `/cancel`) |
+| Sequences | `/sequences` (+ `/status`, `/enroll`, `/enrollments`, `/enrollments/{id}/stop`), `/sequences-meta/mailboxes` |
+| Prospecting | `/prospecting/plan`, `/prospecting/sources`, `/prospecting/credits`, `/prospecting/searches` (+ `/run`, `/rows`, `/enrich`, `/columns`, `/add-to-crm`, `/export.csv`) |
+| Marketing | `/marketing/ads/*` (campaigns, recommendations, copy), `/marketing/content` (+ `/ideas`, `/brief`, `/draft`, `/submit`), `/marketing/social` (+ `/captions`, `/schedule`), `/marketing/landing-pages` (+ `/rewrite`), `/marketing/aeo/*`, `/marketing/campaigns` (demand gen), `/marketing/approvals`, `/marketing/memory` |
+| Automations | `/automations` (+ `/meta`, `/from-template/{id}`, `/{id}/toggle`, `/{id}/test`, `/runs`, `/events`) |
+| Analytics | `/analytics/overview`, `/revenue-by-source`, `/revenue-weekly`, `/attribution?model=first|last|linear`, `/funnel`, `/ai`, `/team`, `/outbound` |
+| Agent studio | `/agent/scenarios` (+ `/run`), `/agent/qa`, `/agent/knowledge-gaps` (+ `/answer`), `/agent/channel-modes` |
+| Platform | `/integrations`, `/platform/providers`, `/api-keys`, `/webhook-endpoints`, `/webhook-events`, `/billing`, `/data-requests`, `/me/notification-preferences`, `/booking-settings`, `/onboarding/import-website` |
+| Public | `/public/orgs/{slug}` (+ `/availability`, `/bookings`), `/public/pay/{token}`, `/public/webchat/...`, `/public/feedback/{token}` (+ `/rate`, `/private`, `/posted`), `/public/pages/{slug}/{page}` (+ `/submit`) |
 | Webhooks | `/webhooks/whatsapp` (verify + signed inbound/status), `/webhooks/razorpay` (signed) |
 
 See [docs/frontend-integration.md](docs/frontend-integration.md) for the page-by-page mapping to the web app.
@@ -105,6 +114,34 @@ See [docs/frontend-integration.md](docs/frontend-integration.md) for the page-by
 Settings are environment variables prefixed `ANVITA_`; see [`app/core/config.py`](app/core/config.py) and
 [`.env.example`](.env.example). In `staging` and `production` the app refuses to start without a strong
 `JWT_SECRET` and an Anthropic API key, or with the test payment provider.
+
+## Paid APIs and provider slots
+
+Every third-party or paid API sits behind a small interface in [`app/services/providers`](app/services/providers):
+
+| Kind | Used by | Slots (env vars) |
+|---|---|---|
+| `people_search` | Prospecting (decision-makers) | Apollo (`ANVITA_APOLLO_API_KEY`) |
+| `enrichment` | Prospecting waterfall (email/phone) | Apollo, Hunter (tried in order) |
+| `places` | Prospecting (business listings) | Google Places |
+| `web_search` | Prospecting signals, AI columns | SerpAPI |
+| `ads` | Ads copilot, analytics ad spend | Google Ads, Meta Ads |
+| `reviews` | Review sync and replies | Google Business Profile |
+| `search_console` | SEO content ideas | Google Search Console |
+| `aeo` | Answer-engine visibility | Perplexity (add ChatGPT / Gemini the same way) |
+| `social` | Social publishing | Meta, LinkedIn |
+| `email`, `sms` | Channels | SMTP and Twilio (implemented); SendGrid, Exotel |
+| `crm` | CRM sync | HubSpot |
+
+To add or finish a vendor, implement the matching Protocol from `types.py` in `vendors.py` (each slot already
+names the endpoint to call and links its docs), and `register()` it with the env vars it needs. Workspaces can
+also paste their own keys through `POST /integrations/{id}/connect`; those win over platform env vars.
+`GET /platform/providers` shows which slots are configured.
+
+Outside production, deterministic **sample providers** stand in for every slot, so all screens and tests work
+without keys (`ANVITA_ENABLE_SAMPLE_PROVIDERS=false` turns them off). In production an unconfigured slot answers
+`501 provider_not_configured` with the vendor options in `details`, and a configured-but-unwritten slot
+answers `501 provider_not_implemented` naming the call to implement. Credits are charged only for results.
 
 ## Operations
 
@@ -118,12 +155,10 @@ Settings are environment variables prefixed `ANVITA_`; see [`app/core/config.py`
 
 ## Roadmap (next phases)
 
-Following the [delivery roadmap](https://github.com/glalit52/anvita-sales-marketing-agent/blob/main/docs/04-technical-architecture.md#12-delivery-roadmap):
-
 * **Realtime:** SSE or WebSocket push for the inbox and webchat (today both poll).
-* **More channels:** SMS (Twilio, Exotel), email (Gmail, Outlook), Instagram and Messenger, plus WhatsApp templates.
-* **Phase 2:** reviews engine, campaigns and segments, reminders, re-engagement automations, Agent Studio evals.
-* **Phase 3:** prospecting (search planner, enrichment waterfall), sequencer, reply classification, CRM sync.
-* **Phase 4:** voice agent, ads co-pilot, SEO/AEO content, attribution and the AI growth report.
+* **Provider adapters:** fill in the remaining paid-API slots (Apollo, Google Places, Google/Meta Ads, Google
+  Business Profile, Search Console, answer engines, social publishers, CRM sync). Each slot is listed by
+  `GET /platform/providers` with its env vars and docs; see `app/services/providers/vendors.py`.
+* **Voice agent** and telephony (missed-call webhooks feed the `missed` automation trigger).
 * **Platform:** hybrid retrieval with pgvector, per-tenant KMS encryption of channel credentials, Redis rate
-  limits, OpenTelemetry tracing, credits ledger and billing.
+  limits, OpenTelemetry tracing.

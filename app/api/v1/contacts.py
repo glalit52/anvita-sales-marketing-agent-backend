@@ -126,7 +126,7 @@ async def update_contact(contact_id: uuid.UUID, body: ContactUpdate, principal: 
         changes["phone"] = normalize_phone(changes["phone"], principal.org.country)
     if "tags" in changes and changes["tags"] is not None:
         changes["tags"] = list(dict.fromkeys(t.strip().lower() for t in changes["tags"] if t.strip()))
-    old_stage = contact.stage
+    old_stage, old_tags = contact.stage, set(contact.tags)
     for k, v in changes.items():
         setattr(contact, k, v)
     try:
@@ -134,6 +134,8 @@ async def update_contact(contact_id: uuid.UUID, body: ContactUpdate, principal: 
     except IntegrityError as e:
         raise _dupe_error(e) from e
     emit(db, principal.org_id, "contact.updated", {**contact_event(contact), "changed": sorted(changes)})
+    for tag in set(contact.tags) - old_tags:
+        emit(db, principal.org_id, "contact.tagged", {"contact_id": contact.id, "tag": tag})
     if "stage" in changes and changes["stage"] != old_stage:
         audit(
             db,
@@ -173,7 +175,10 @@ async def bulk_update(body: BulkContactAction, principal: CurrentPrincipal, db: 
     remove = {t.strip().lower() for t in body.remove_tags}
     for c in rows:
         if add or remove:
+            before = set(c.tags)
             c.tags = [t for t in dict.fromkeys([*c.tags, *add]) if t not in remove]
+            for tag in set(c.tags) - before:
+                emit(db, principal.org_id, "contact.tagged", {"contact_id": c.id, "tag": tag})
         if body.stage:
             c.stage = body.stage
         if body.assign_to_ai:
