@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     razorpay_webhook_secret: SecretStr | None = None
     max_ai_payment_amount: int = 50_000_00  # minor units (paise): ₹50,000
 
+    # Deterministic stand-ins for paid providers (Apollo, Google Places, Ads, …) so every screen works in
+    # development without keys. Ignored in staging/production.
+    enable_sample_providers: bool = True
+
     whatsapp_verify_token: SecretStr | None = None
     whatsapp_app_secret: SecretStr | None = None
     whatsapp_graph_url: str = "https://graph.facebook.com/v21.0"

@@ -275,9 +275,7 @@ async def cancel_appointment(ctx: ToolContext, args: dict[str, Any]) -> dict[str
     # The agent may only touch the current contact's own appointments.
     if appt is None or appt.contact_id != ctx.contact.id or appt.org_id != ctx.org.id:
         return {"error": "Appointment not found for this contact"}
-    appt.status = "cancelled"
-    appt.cancelled_at = utcnow()
-    appt.cancel_reason = (args.get("reason") or "Cancelled by customer via AI")[:300]
+    scheduling.cancel(ctx.db, appt, (args.get("reason") or "Cancelled by customer via AI")[:300])
     return {"cancelled": True, "appointment_id": str(appt.id)}
 
 

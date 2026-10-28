@@ -14,9 +14,23 @@ from app.models.inbox import Channel, Conversation, Message
 from app.models.ops import Event, Notification
 from app.models.org import AuditLog, Invite, Location, Membership, Organization, RefreshToken, User
 from app.models.payments import Payment
+from app.models.platform import (
+    ApiKey,
+    BillingInvoice,
+    CreditLedger,
+    DataRequest,
+    IntegrationConnection,
+    WebhookEndpoint,
+)
 from app.models.scheduling import Appointment, Provider, Service
 
 __all__ = [
+    "ApiKey",
+    "BillingInvoice",
+    "CreditLedger",
+    "DataRequest",
+    "IntegrationConnection",
+    "WebhookEndpoint",
     "AgentConfig",
     "AgentRun",
     "AgentVersion",

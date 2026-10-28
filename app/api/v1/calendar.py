@@ -193,10 +193,9 @@ async def update_appointment(
         await db.commit()
         return AppointmentOut.model_validate(new)
     if "status" in changes:
+        if changes["status"] == "cancelled":
+            scheduling.cancel(db, appt, changes.get("cancel_reason"))
         appt.status = changes["status"]
-        if appt.status == "cancelled":
-            appt.cancelled_at = utcnow()
-            appt.cancel_reason = changes.get("cancel_reason")
         if appt.status == "completed":
             contact = await db.get(Contact, appt.contact_id)
             if contact and contact.stage in ("new", "qualified", "booked"):
@@ -214,6 +213,6 @@ async def cancel_appointment(
     appt = await db.get(Appointment, appointment_id)
     if appt is None:
         raise NotFound("Appointment not found")
-    appt.status, appt.cancelled_at, appt.cancel_reason = "cancelled", utcnow(), reason
+    scheduling.cancel(db, appt, reason)
     await db.commit()
     return Ok()

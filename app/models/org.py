@@ -49,6 +49,8 @@ class Membership(IdMixin, TimestampMixin, Base):
     role: Mapped[str] = mapped_column(String(16))
     # Empty list = access to every location.
     location_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
+    # Per-user notification channels by event: {"escalation": {"inApp": true, "email": true, ...}}
+    preferences: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
 
 
 class RefreshToken(IdMixin, Base):

@@ -42,6 +42,7 @@ from app.services.agent.prompts import (
 from app.services.agent.tools import ToolContext, run_tool, tool_schemas
 from app.services.audit import audit
 from app.services.contacts import set_consent
+from app.services.events import emit
 from app.services.inbox import create_outbound
 from app.services.notify import notify
 
@@ -238,6 +239,12 @@ async def escalate(
     elif action == "pause":
         conv.ai_paused_until = utcnow() + timedelta(minutes=get_settings().agent_human_pause_minutes)
     conv.escalation_reason = reason
+    emit(
+        db,
+        org.id,
+        "conversation.escalated",
+        {"conversation_id": conv.id, "contact_id": contact.id, "reason": reason, "assignee_id": assignee},
+    )
     if summary:
         conv.ai_summary = summary
     conv.status = "open"
@@ -317,6 +324,12 @@ async def run_reply(
             **kw,
         )
         db.add(run)
+        emit(
+            db,
+            org.id,
+            "agent_run.completed",
+            {"conversation_id": conv.id, "outcome": outcome, "reason": reason, "model": run.model},
+        )
         return run
 
     # --- Should the AI speak at all? -------------------------------------------------------------

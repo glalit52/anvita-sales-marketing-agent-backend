@@ -5,7 +5,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
 from app.models import ConsentRecord, Contact
+from app.services.events import emit
 from app.services.phone import normalize_phone
+
+
+def contact_event(c: Contact) -> dict:
+    return {
+        "contact_id": c.id,
+        "name": c.name,
+        "phone": c.phone,
+        "email": c.email,
+        "stage": c.stage,
+        "source": c.source,
+        "tags": list(c.tags or []),
+    }
 
 
 async def find_contact(
@@ -52,6 +65,7 @@ async def get_or_create_contact(
     )
     db.add(contact)
     await db.flush()
+    emit(db, org_id, "contact.created", contact_event(contact))
     return contact, True
 
 

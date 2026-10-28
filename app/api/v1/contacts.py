@@ -23,7 +23,8 @@ from app.schemas.crm import (
 )
 from app.schemas.inbox import ConversationOut
 from app.services.audit import audit
-from app.services.contacts import set_consent
+from app.services.contacts import contact_event, set_consent
+from app.services.events import emit
 from app.services.phone import normalize_phone
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
@@ -104,6 +105,7 @@ async def create_contact(body: ContactIn, principal: CurrentPrincipal, db: DB) -
         await db.flush()
     except IntegrityError as e:
         raise _dupe_error(e) from e
+    emit(db, principal.org_id, "contact.created", contact_event(contact))
     audit(
         db, principal.org_id, "contact.created", actor_id=principal.user_id, entity_type="contact", entity_id=contact.id
     )
@@ -131,6 +133,7 @@ async def update_contact(contact_id: uuid.UUID, body: ContactUpdate, principal: 
         await db.flush()
     except IntegrityError as e:
         raise _dupe_error(e) from e
+    emit(db, principal.org_id, "contact.updated", {**contact_event(contact), "changed": sorted(changes)})
     if "stage" in changes and changes["stage"] != old_stage:
         audit(
             db,

@@ -19,10 +19,11 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, org_id_var
 from app.db.base import utcnow
 from app.db.session import tenant_session
-from app.models import Channel, Contact, Conversation, Event, KnowledgeSource, Message
+from app.models import Channel, Contact, Conversation, Event, KnowledgeSource, Message, WebhookEndpoint
 from app.services.agent.runtime import run_reply
 from app.services.channels import SendError, adapter_for
 from app.services.knowledge import ingest_source
+from app.services.webhooks_out import PUBLIC_EVENTS, deliver, fanout
 
 log = logging.getLogger("anvita.worker")
 LEASE = timedelta(minutes=5)
@@ -76,6 +77,18 @@ async def on_message_outbound(org_id: uuid.UUID, payload: dict[str, Any]) -> Non
         await db.commit()
 
 
+@handles("webhook.deliver")
+async def on_webhook_deliver(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        endpoint = await db.get(WebhookEndpoint, uuid.UUID(payload["endpoint_id"]))
+        if endpoint is None or not endpoint.active:
+            return
+        ok = await deliver(db, endpoint, payload["event"], payload["event_id"], payload.get("data", {}))
+        await db.commit()
+    if not ok:
+        raise RuntimeError(f"Webhook delivery failed: {endpoint.last_error}")  # retried with backoff
+
+
 @handles("knowledge_source.created")
 async def on_kb_source(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
     async with tenant_session(org_id) as db:
@@ -124,12 +137,25 @@ async def finish(
         await db.commit()
 
 
+async def publish_to_webhooks(event: Event) -> None:
+    """Queue one delivery per subscribed endpoint, on the first attempt only (retries must not re-fan)."""
+    if event.org_id is None or event.attempts != 1 or event.type not in PUBLIC_EVENTS:
+        return
+    async with tenant_session(event.org_id) as db:
+        await fanout(db, event.org_id, event.type, event.payload, event.id)
+        await db.commit()
+
+
 async def process(event: Event) -> None:
+    org_id_var.set(str(event.org_id) if event.org_id else None)
+    try:
+        await publish_to_webhooks(event)
+    except Exception:  # noqa: BLE001 - webhook fan-out must never block the domain handler
+        log.exception("webhook fanout failed", extra={"data": {"event": event.type}})
     handler = HANDLERS.get(event.type)
     if handler is None:
-        await finish(event.id)  # nothing subscribes to this event type (yet)
+        await finish(event.id)  # nothing else subscribes to this event type
         return
-    org_id_var.set(str(event.org_id) if event.org_id else None)
     max_attempts = get_settings().worker_max_attempts
     try:
         assert event.org_id is not None

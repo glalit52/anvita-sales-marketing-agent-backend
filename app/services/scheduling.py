@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError, Conflict, NotFound
 from app.db.base import utcnow
 from app.models import Appointment, Location, Organization, Provider, Service
+from app.services.events import emit
 
 SLOT_STEP_MINUTES = 30
 MIN_LEAD_MINUTES = 30
@@ -173,7 +174,26 @@ async def book(
         if "ex_appointments_no_overlap" in str(e.orig):
             raise Conflict("The provider is already booked at that time", code="slot_taken") from e
         raise
+    emit(db, org.id, "appointment.booked", appointment_event(appt))
     return appt
+
+
+def appointment_event(a: Appointment) -> dict:
+    return {
+        "appointment_id": a.id,
+        "contact_id": a.contact_id,
+        "service_id": a.service_id,
+        "provider_id": a.provider_id,
+        "location_id": a.location_id,
+        "starts_at": a.starts_at.isoformat(),
+        "status": a.status,
+        "source": a.source,
+    }
+
+
+def cancel(db: AsyncSession, a: Appointment, reason: str | None) -> None:
+    a.status, a.cancelled_at, a.cancel_reason = "cancelled", utcnow(), reason
+    emit(db, a.org_id, "appointment.cancelled", appointment_event(a))
 
 
 async def overlapping(db: AsyncSession, org_id: uuid.UUID, start: datetime, end: datetime) -> list[Appointment]:

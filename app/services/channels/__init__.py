@@ -1,7 +1,19 @@
-from app.services.channels.base import ChannelAdapter, DevOutboxAdapter, SendError, WebchatAdapter
+from app.services.channels.base import (
+    Capabilities,
+    ChannelAdapter,
+    DevOutboxAdapter,
+    ProviderChannelAdapter,
+    SendError,
+    WebchatAdapter,
+)
 from app.services.channels.whatsapp import WhatsAppAdapter
 
-_ADAPTERS: dict[str, ChannelAdapter] = {"webchat": WebchatAdapter(), "whatsapp": WhatsAppAdapter()}
+_ADAPTERS: dict[str, ChannelAdapter] = {
+    "webchat": WebchatAdapter(),
+    "whatsapp": WhatsAppAdapter(),
+    "sms": ProviderChannelAdapter("sms", "sms", Capabilities()),
+    "email": ProviderChannelAdapter("email", "email", Capabilities()),
+}
 
 
 def adapter_for(channel_type: str) -> ChannelAdapter:

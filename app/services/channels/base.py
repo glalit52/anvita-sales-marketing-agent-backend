@@ -59,3 +59,37 @@ class DevOutboxAdapter:
             raise SendError(f"No provider integration for channel '{self.type}'", retryable=False)
         log.info("dev outbox send", extra={"data": {"channel": self.type, "to": contact.phone or contact.email}})
         return f"dev-{uuid.uuid4().hex}"
+
+
+class ProviderChannelAdapter:
+    """SMS and email: delivered through whichever provider is configured (Twilio, SMTP, …; see
+    app/services/providers). Channel credentials, keyed by the provider's env var names, override platform env."""
+
+    def __init__(self, type: str, kind: str, capabilities: Capabilities) -> None:
+        self.type = type
+        self.kind = kind
+        self.capabilities = capabilities
+
+    async def send(self, channel: Channel | None, contact: Contact, message: Message) -> str | None:
+        from app.core.errors import AppError
+        from app.services import providers
+
+        try:
+            provider = providers.resolve(self.kind, overrides=(channel.credentials if channel else None) or None)
+        except AppError as e:
+            raise SendError(e.message, retryable=False) from e
+        if self.kind == "sms":
+            if not contact.phone:
+                raise SendError("Contact has no phone number", retryable=False)
+            return await provider.send(to=contact.phone, text=message.body)
+        if not contact.email:
+            raise SendError("Contact has no email address", retryable=False)
+        config = channel.config if channel else {}
+        return await provider.send(
+            to=contact.email,
+            subject=config.get("default_subject") or "Re: your enquiry",
+            text=message.body,
+            from_name=config.get("from_name") or (message.author_name or "Team"),
+            reply_to=config.get("reply_to"),
+            headers={"List-Unsubscribe-Post": "List-Unsubscribe=One-Click"} if config.get("unsubscribe_url") else {},
+        )

@@ -9,11 +9,12 @@ from app.api.v1 import (
     ops,
     org,
     payments,
+    platform,
     public,
     sell,
     webhooks,
 )
 
 api_router = APIRouter()
-for module in (auth, org, contacts, conversations, sell, calendar, payments, agent, ops, public, webhooks):
+for module in (auth, org, contacts, conversations, sell, calendar, payments, agent, ops, platform, public, webhooks):
     api_router.include_router(module.router)

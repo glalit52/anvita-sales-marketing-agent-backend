@@ -166,5 +166,17 @@ async def mark_paid(db: AsyncSession, payment: Payment, *, method: str | None, p
         contact_id=payment.contact_id,
         link=f"/payments?id={payment.id}",
     )
-    emit(db, payment.org_id, "payment.paid", {"payment_id": payment.id})
+    emit(
+        db,
+        payment.org_id,
+        "payment.paid",
+        {
+            "payment_id": payment.id,
+            "amount_minor": payment.amount_minor,
+            "currency": payment.currency,
+            "contact_id": payment.contact_id,
+            "purpose": payment.purpose,
+            "method": method,
+        },
+    )
     return True
