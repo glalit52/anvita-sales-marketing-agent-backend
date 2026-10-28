@@ -18,7 +18,9 @@ from app.schemas.inbox import (
     MessageOut,
     SendMessageIn,
     StartConversationIn,
+    SuggestedReply,
 )
+from app.services.agent.runtime import suggest_reply
 from app.services.audit import audit
 from app.services.events import emit
 from app.services.inbox import create_outbound, open_conversation
@@ -173,6 +175,8 @@ async def update_conversation(
         conv.assignee_type, conv.assignee_id = "human", changes["assignee_id"]
     if "ai_paused_until" in changes:
         conv.ai_paused_until = changes["ai_paused_until"]
+    if changes.get("resolve_escalation"):
+        conv.escalation_reason = None
     audit(
         db,
         principal.org_id,
@@ -274,3 +278,15 @@ async def request_ai_reply(conversation_id: uuid.UUID, principal: CurrentPrincip
     emit(db, principal.org_id, "message.received", {"conversation_id": conv.id, "message_id": latest.id})
     await db.commit()
     return {"queued": True}
+
+
+@router.post("/{conversation_id}/suggest-reply", response_model=SuggestedReply)
+async def suggest(conversation_id: uuid.UUID, principal: CurrentPrincipal, db: DB) -> SuggestedReply:
+    """Draft the next reply with the AI for a teammate to edit. Nothing is sent and tool side effects
+    (bookings, payment links) are rolled back."""
+    conv = await _get(db, principal, conversation_id)
+    gen, ctx = await suggest_reply(db, principal.org, conv)
+    await db.rollback()
+    if not gen.text:
+        raise AppError(gen.error or "The AI could not draft a reply", code="no_suggestion")
+    return SuggestedReply(body=gen.text, sources=ctx.sources)

@@ -88,6 +88,8 @@ class ConversationUpdate(Schema):
     assignee_type: Literal["ai", "human"] | None = None
     assignee_id: uuid.UUID | None = None
     ai_paused_until: datetime | None = None
+    # Mark the escalation handled without changing who owns the thread.
+    resolve_escalation: bool = False
 
 
 class SendMessageIn(Schema):
@@ -100,6 +102,11 @@ class StartConversationIn(Schema):
     contact_id: uuid.UUID
     channel_type: ChannelType
     body: str = Field(min_length=1, max_length=4096)
+
+
+class SuggestedReply(Schema):
+    body: str
+    sources: list[str]
 
 
 class InboxCounts(Schema):

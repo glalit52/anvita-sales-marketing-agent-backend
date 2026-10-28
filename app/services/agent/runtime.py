@@ -499,3 +499,29 @@ async def sandbox_reply(
         messages.insert(0, {"role": "user", "content": "[The business started this conversation.]"})
     gen = await generate(ctx, messages, llm or get_llm(), channel=channel)
     return gen, ctx
+
+
+async def suggest_reply(
+    db: AsyncSession, org: Organization, conv: Conversation, *, llm: LLMClient | None = None
+) -> tuple[Generation, ToolContext]:
+    """Copilot "suggest": run the agent on the real thread in sandbox mode (the caller rolls back)."""
+    s = get_settings()
+    contact = await db.get(Contact, conv.contact_id)
+    assert contact is not None
+    config = await ensure_agent_config(db, org)
+    history = list(
+        (
+            await db.scalars(
+                select(Message)
+                .where(Message.conversation_id == conv.id)
+                .order_by(Message.created_at.desc())
+                .limit(s.agent_history_messages)
+            )
+        ).all()
+    )[::-1]
+    messages = to_llm_messages(history)
+    if not messages or messages[-1]["role"] != "user":
+        messages.append({"role": "user", "content": "[Internal: draft the business's next message to the customer.]"})
+    ctx = ToolContext(db=db, org=org, contact=contact, conversation=conv, config=config, sandbox=True)
+    gen = await generate(ctx, messages, llm or get_llm(), channel=conv.channel_type)
+    return gen, ctx

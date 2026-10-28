@@ -108,6 +108,7 @@ async def test_payment_link_lifecycle(client, ws):
 
     public = (await client.get(f"/public/pay/{token}")).json()
     assert public["businessName"] == "Smile Dental" and public["customerName"] == "Rohit Mehta"
+    assert public["provider"] == "test" and public["checkoutUrl"] is None
     paid = await client.post(f"/public/pay/{token}/test-confirm", json={"method": "upi"})
     assert paid.status_code == 200 and paid.json()["status"] == "paid"
     # Confirming twice is harmless.

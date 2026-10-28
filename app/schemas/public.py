@@ -80,7 +80,7 @@ class PublicPayment(Schema):
     due_at: datetime | None
     paid_at: datetime | None
     provider: str
-    checkout_order_id: str | None
+    checkout_url: str | None
 
 
 class TestConfirmIn(Schema):

@@ -141,6 +141,7 @@ async def create_payment(
     order = await prov.create_order(payment, contact)
     payment.provider = prov.name
     payment.provider_order_id = order.order_id
+    payment.checkout_url = order.checkout_url
     db.add(payment)
     await db.flush()
     return payment

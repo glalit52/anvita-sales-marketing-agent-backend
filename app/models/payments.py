@@ -33,6 +33,8 @@ class Payment(IdMixin, TenantMixin, TimestampMixin, Base):
     provider: Mapped[str] = mapped_column(String(16), default="test")
     provider_order_id: Mapped[str | None] = mapped_column(String(200), index=True)
     provider_payment_id: Mapped[str | None] = mapped_column(String(200))
+    # Provider-hosted checkout page (e.g. a Razorpay payment link); None for the test provider.
+    checkout_url: Mapped[str | None] = mapped_column(String(500))
     # Unguessable id used in the public /pay/{token} page.
     public_token: Mapped[str] = mapped_column(String(64), unique=True)
     created_by_type: Mapped[str] = mapped_column(String(8), default="user")

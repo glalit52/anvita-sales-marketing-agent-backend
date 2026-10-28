@@ -216,7 +216,7 @@ async def get_pay(token: str, db: DB) -> PublicPayment:
         due_at=p.due_at,
         paid_at=p.paid_at,
         provider=p.provider,
-        checkout_order_id=p.provider_order_id,
+        checkout_url=p.checkout_url,
     )
 
 
@@ -286,7 +286,7 @@ async def webchat_session(slug: str, body: WebchatSessionIn, db: DB) -> WebchatS
 
 
 def _widget_message(m: Message) -> WebchatMessage:
-    author = "visitor" if m.author_type == "contact" else "system" if m.author_type == "system" else "agent"
+    author = {"contact": "visitor", "ai": "ai", "human": "human"}.get(m.author_type, "system")
     return WebchatMessage(
         id=m.id,
         author=author,

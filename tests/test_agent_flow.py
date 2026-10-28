@@ -55,7 +55,7 @@ async def test_webchat_message_ai_books_and_sends_deposit_link(client, ws, clini
     assert await drain() >= 1
 
     msgs = (await client.get("/public/webchat/messages", headers=wh)).json()
-    assert [m["author"] for m in msgs] == ["visitor", "agent"]
+    assert [m["author"] for m in msgs] == ["visitor", "ai"]
     reply = msgs[-1]
     assert reply["card"]["type"] == "booking"
     assert "/pay/" in reply["body"]  # payment URL is always included in the message
@@ -261,3 +261,27 @@ async def test_inbound_message_not_blocked_while_agent_waits_on_model(client, ws
     assert concurrent_ok == [True]
     conv = (await ws.get(f"/conversations/{session['conversationId']}")).json()
     assert conv["contact"]["name"] == "Zoya Mirza" and "whitening" in conv["contact"]["tags"]
+
+
+async def test_suggest_reply_and_resolve_escalation(client, ws):
+    set_llm(ScriptedLLM([text_turn("Hello! How can I help?"), text_turn("Sure, we're open 9 to 6.")]))
+    session, wh = await _webchat(client, ws.org["slug"])
+    await client.post("/public/webchat/messages", json={"body": "hi"}, headers=wh)
+    await drain()
+    cid = session["conversationId"]
+    await client.post("/public/webchat/messages", json={"body": "what are your hours?"}, headers=wh)
+    await ws.patch(f"/conversations/{cid}", {"assigneeType": "human", "assigneeId": ws.session["user"]["id"]})
+
+    r = await ws.post(f"/conversations/{cid}/suggest-reply")
+    assert r.status_code == 200, r.text
+    assert r.json()["body"] == "Sure, we're open 9 to 6."
+    conv = (await ws.get(f"/conversations/{cid}")).json()
+    assert conv["messages"][-1]["body"] == "what are your hours?"  # nothing was sent
+
+    async with tenant_session(ws.org_uuid) as db:
+        from app.models import Conversation
+
+        c = await db.get(Conversation, __import__("uuid").UUID(cid))
+        c.escalation_reason = "Negative sentiment"
+        await db.commit()
+    assert (await ws.patch(f"/conversations/{cid}", {"resolveEscalation": True})).json()["escalationReason"] is None
