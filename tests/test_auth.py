@@ -72,3 +72,12 @@ async def test_invite_flow_and_roles(client, ws):
     # Invite tokens are single use.
     again = await client.post("/auth/accept-invite", json={"token": token, "password": "arjun-long-password"})
     assert again.status_code == 404
+
+
+def test_cors_origins_from_comma_separated_env(monkeypatch):
+    from app.core.config import Settings
+
+    monkeypatch.setenv("ANVITA_CORS_ORIGINS", "http://localhost:3000, https://app.anvita.ai")
+    assert Settings().cors_origins == ["http://localhost:3000", "https://app.anvita.ai"]
+    monkeypatch.setenv("ANVITA_CORS_ORIGINS", '["https://a.example"]')
+    assert Settings().cors_origins == ["https://a.example"]

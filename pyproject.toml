@@ -45,11 +45,12 @@ ignore = ["B008"]
 [tool.ruff.lint.per-file-ignores]
 "alembic/versions/*" = ["E501", "W291"]
 "scripts/seed_demo.py" = ["E501"]
+"scripts/seed_growth.py" = ["E501"]
 "app/services/integrations.py" = ["E501"]
 
 [tool.ruff.format]
 # Demo fixture data reads best as one record per line.
-exclude = ["scripts/seed_demo.py", "alembic/versions/*", "app/services/integrations.py"]
+exclude = ["scripts/seed_demo.py", "scripts/seed_growth.py", "alembic/versions/*", "app/services/integrations.py"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -40,6 +40,7 @@ from app.models import (
 )
 from app.models.crm import DEAL_PROBABILITY
 from app.services import knowledge
+from scripts.seed_growth import seed_growth
 
 SLUG = "smile-dental"
 PASSWORD = "demo-password-123"
@@ -367,6 +368,8 @@ async def seed(reset: bool) -> None:
         await db.flush()
         for q, a in FAQS:
             await knowledge.add_faq(db, org_id, q, a)
+        await db.flush()
+        await seed_growth(db, org, users)
         await db.commit()
     print(f"Seeded '{SLUG}'. Sign in as priya@smiledental.in / {PASSWORD}")
 
