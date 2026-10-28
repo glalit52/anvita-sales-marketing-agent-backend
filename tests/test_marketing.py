@@ -382,3 +382,28 @@ async def test_booking_settings_reminders_and_onboarding(ws, clinic, monkeypatch
     assert imp.status_code == 200 and imp.json()["businessName"] == "Smile Dental"
     assert imp.json()["pages"][0]["url"] == "https://smiledental.in"
     assert ProspectRow  # model import keeps the table in metadata for TRUNCATE
+
+
+async def test_sandbox_applies_escalation_rules_and_config_keeps_channel_modes(ws, make_workspace):
+    await ws.post(
+        "/agent/escalation-rules",
+        {"name": "Legal threat", "kind": "keyword", "condition": {"keywords": ["consumer court"]}, "action": "assign"},
+    )
+    r = (
+        await ws.post(
+            "/agent/sandbox", {"messages": [{"role": "contact", "body": "Refund me or I go to consumer court"}]}
+        )
+    ).json()
+    assert r["escalated"] is True and r["escalationReason"] == "Legal threat"
+
+    await ws.put("/agent/channel-modes", {"modes": {"sms": "off"}})
+    await ws.patch("/agent/config", {"guardrails": {"maxDiscountPct": 5}})
+    assert (await ws.get("/agent/channel-modes")).json()["sms"] == "off"
+
+    # Records of another workspace are invisible (row-level security), so writes by id fail with 404.
+    pb = await ws.post("/agent/playbooks", {"name": "Mine", "instructions": "x"})
+    other = await make_workspace("eve@other.in", "Other Clinic")
+    hijack = await other.put(f"/agent/playbooks/{pb.json()['id']}", {"name": "Hijacked", "instructions": "y"})
+    assert hijack.status_code == 404
+    assert (await other.delete(f"/agent/playbooks/{pb.json()['id']}")).status_code == 404
+    assert any(p["name"] == "Mine" for p in (await ws.get("/agent/playbooks")).json())

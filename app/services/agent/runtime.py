@@ -514,7 +514,32 @@ async def sandbox_reply(
             messages.append({"role": role, "content": turn["body"]})
     if messages and messages[0]["role"] == "assistant":
         messages.insert(0, {"role": "user", "content": "[The business started this conversation.]"})
-    gen = await generate(ctx, messages, llm or get_llm(), channel=channel)
+    llm = llm or get_llm()
+    # Escalation rules apply in the sandbox exactly as on a live thread.
+    rules = list(
+        (
+            await db.scalars(
+                select(EscalationRule).where(EscalationRule.org_id == org.id, EscalationRule.enabled.is_(True))
+            )
+        ).all()
+    )
+    if rules:
+        history = [
+            Message(
+                author_type="contact" if t["role"] == "contact" else "ai", body=t["body"], is_note=False, is_draft=False
+            )
+            for t in transcript
+        ]
+        recent_text = " ".join(m.body for m in history[-4:] if m.author_type == "contact")
+        rule = match_rule(rules, text=recent_text, contact=contact, labels={}, phase="pre")
+        if rule is None:
+            scratch = Conversation(org_id=org.id, contact_id=contact.id, channel_type=channel)
+            labels, _ = await classify(db, scratch, history, llm)
+            rule = match_rule(rules, text=recent_text, contact=contact, labels=labels, phase="post")
+        if rule is not None and rule.action != "notify":
+            ctx.escalation = {"reason": rule.name, "summary": ""}
+            return Generation(text=HANDOFF_TEXT), ctx
+    gen = await generate(ctx, messages, llm, channel=channel)
     return gen, ctx
 
 

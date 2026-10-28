@@ -64,6 +64,9 @@ async def update_config(body: AgentConfigUpdate, principal: ManagerPrincipal, db
     changes = body.model_dump(exclude_unset=True, by_alias=False)
     if "guardrails" in changes:
         changes["guardrails"] = body.guardrails.model_dump(by_alias=False) if body.guardrails else {}
+        # Per-channel modes live alongside the guardrails but are managed by PUT /agent/channel-modes.
+        if (config.guardrails or {}).get("channel_modes"):
+            changes["guardrails"]["channel_modes"] = config.guardrails["channel_modes"]
     for k, v in changes.items():
         setattr(config, k, v)
     audit(db, principal.org_id, "agent.config_updated", actor_id=principal.user_id, data={"fields": sorted(changes)})
