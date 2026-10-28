@@ -87,7 +87,9 @@ class ProviderChannelAdapter:
         config = channel.config if channel else {}
         return await provider.send(
             to=contact.email,
-            subject=config.get("default_subject") or "Re: your enquiry",
+            subject=next((a["subject"] for a in message.attachments or [] if a.get("kind") == "subject"), None)
+            or config.get("default_subject")
+            or "Re: your enquiry",
             text=message.body,
             from_name=config.get("from_name") or (message.author_name or "Team"),
             reply_to=config.get("reply_to"),

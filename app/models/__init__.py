@@ -10,6 +10,18 @@ from app.models.agent import (
     Playbook,
 )
 from app.models.crm import ConsentRecord, Contact, ContactNote, Deal, Task
+from app.models.growth import (
+    Campaign,
+    CampaignRecipient,
+    Enrollment,
+    MessageTemplate,
+    Review,
+    ReviewRequest,
+    Segment,
+    Sequence,
+    SequenceSend,
+    SequenceStep,
+)
 from app.models.inbox import Channel, Conversation, Message
 from app.models.ops import Event, Notification
 from app.models.org import AuditLog, Invite, Location, Membership, Organization, RefreshToken, User
@@ -25,6 +37,16 @@ from app.models.platform import (
 from app.models.scheduling import Appointment, Provider, Service
 
 __all__ = [
+    "Campaign",
+    "CampaignRecipient",
+    "Enrollment",
+    "MessageTemplate",
+    "Review",
+    "ReviewRequest",
+    "Segment",
+    "Sequence",
+    "SequenceSend",
+    "SequenceStep",
     "ApiKey",
     "BillingInvoice",
     "CreditLedger",

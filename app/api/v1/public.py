@@ -9,9 +9,10 @@ from sqlalchemy import select
 
 from app.api.deps import DB
 from app.core.config import get_settings
-from app.core.errors import AppError, Forbidden, NotFound, Unauthorized
+from app.core.errors import AppError, Conflict, Forbidden, NotFound, Unauthorized
 from app.core.ratelimit import client_ip, limiter
 from app.core.security import create_webchat_token, decode_jwt
+from app.db.base import utcnow
 from app.db.session import set_tenant
 from app.models import (
     AgentConfig,
@@ -22,9 +23,14 @@ from app.models import (
     Organization,
     Payment,
     Provider,
+    ReviewRequest,
     Service,
 )
 from app.schemas.public import (
+    FeedbackPage,
+    FeedbackPrivateIn,
+    FeedbackRateIn,
+    FeedbackRateOut,
     PublicBookingIn,
     PublicBookingOut,
     PublicBusiness,
@@ -39,7 +45,7 @@ from app.schemas.public import (
     WebchatSessionOut,
 )
 from app.schemas.scheduling import Slot
-from app.services import scheduling
+from app.services import reviews, scheduling
 from app.services.contacts import get_or_create_contact, set_consent
 from app.services.inbox import open_conversation, record_inbound
 from app.services.notify import notify
@@ -234,6 +240,79 @@ async def test_confirm(token: str, body: TestConfirmIn, db: DB) -> PublicPayment
     await mark_paid(db, p, method=body.method, provider_payment_id=f"test_pay_{uuid.uuid4().hex[:12]}")
     await db.commit()
     return await get_pay(token, db)
+
+
+# ---- Review feedback page ----------------------------------------------------------------------------
+
+
+async def _request_by_token(db: DB, token: str) -> tuple[ReviewRequest, Organization]:
+    db.info["rls_bypass"] = True
+    found = (
+        await db.execute(select(ReviewRequest.id, ReviewRequest.org_id).where(ReviewRequest.token == token))
+    ).first()
+    await db.rollback()
+    db.info["rls_bypass"] = False
+    if found is None:
+        raise NotFound("Feedback link not found")
+    await set_tenant(db, found.org_id)
+    req = await db.get(ReviewRequest, found.id, with_for_update=True)
+    org = await db.get(Organization, found.org_id)
+    assert req and org
+    return req, org
+
+
+async def _feedback_page(db: DB, req: ReviewRequest, org: Organization) -> FeedbackPage:
+    contact = await db.get(Contact, req.contact_id)
+    return FeedbackPage(
+        business_name=org.name,
+        first_name=((contact.name if contact else "") or "").split(" ")[0] or None,
+        status=req.status,
+        rating=req.rating,
+        issues=reviews.ISSUES,
+        public_link=reviews.review_link(org) if (req.rating or 0) >= 4 else None,
+        suggestions=req.suggestions or {},
+    )
+
+
+@router.get("/feedback/{token}", response_model=FeedbackPage, dependencies=[Throttled])
+async def get_feedback(token: str, db: DB) -> FeedbackPage:
+    req, org = await _request_by_token(db, token)
+    if req.status == "sent":
+        req.status, req.clicked_at = "clicked", utcnow()
+        await db.commit()
+    return await _feedback_page(db, req, org)
+
+
+@router.post("/feedback/{token}/rate", response_model=FeedbackRateOut, dependencies=[Throttled])
+async def feedback_rate(token: str, body: FeedbackRateIn, db: DB) -> FeedbackRateOut:
+    req, org = await _request_by_token(db, token)
+    if req.status in ("reviewed", "private_feedback"):
+        raise Conflict("Feedback already submitted")
+    out = await reviews.rate(db, org, req, body.rating)
+    await db.commit()
+    return FeedbackRateOut(public_link=out["publicLink"], suggestions=out["suggestions"])
+
+
+@router.post("/feedback/{token}/private", response_model=FeedbackPage, dependencies=[Throttled])
+async def feedback_private(token: str, body: FeedbackPrivateIn, db: DB) -> FeedbackPage:
+    req, org = await _request_by_token(db, token)
+    if req.rating is None:
+        raise AppError("Rate first", code="not_rated")
+    if req.status == "private_feedback":
+        raise Conflict("Feedback already submitted")
+    await reviews.private_feedback(db, org, req, body.issues, body.text)
+    await db.commit()
+    return await _feedback_page(db, req, org)
+
+
+@router.post("/feedback/{token}/posted", response_model=FeedbackPage, dependencies=[Throttled])
+async def feedback_posted(token: str, db: DB) -> FeedbackPage:
+    """The customer clicked through to the public review site."""
+    req, org = await _request_by_token(db, token)
+    if (req.rating or 0) >= 4:
+        req.status = "reviewed"
+        await db.commit()
+    return await _feedback_page(db, req, org)
 
 
 # ---- Webchat widget --------------------------------------------------------------------------------

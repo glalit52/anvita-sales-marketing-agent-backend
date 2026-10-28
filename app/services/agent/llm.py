@@ -276,3 +276,58 @@ def set_llm(client: LLMClient | None) -> None:
     """Override the gateway (tests)."""
     global _client
     _client = client
+
+
+async def ask_json(
+    *,
+    system: str,
+    prompt: str,
+    schema: dict[str, Any],
+    fallback: dict[str, Any],
+    model: str | None = None,
+    effort: str = "low",
+    max_tokens: int = 2048,
+) -> dict[str, Any]:
+    """One structured-output call. Returns `fallback` with the offline model or on any model/parse error, so
+    background features degrade to sensible defaults instead of failing."""
+    llm = get_llm()
+    if isinstance(llm, OfflineLLM):
+        return fallback
+    try:
+        resp = await llm.complete(
+            model=model or get_settings().llm_fast_model,
+            system=[{"type": "text", "text": system}],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            effort=effort,
+            json_schema=schema,
+        )
+        data = json.loads(resp.text)
+        if not isinstance(data, dict):
+            return fallback
+        keys = schema.get("properties", {}).keys()
+        return {**fallback, **{k: v for k, v in data.items() if k in keys}}
+    except (LLMError, json.JSONDecodeError, ValueError):
+        log.warning(
+            "structured call failed; using fallback", extra={"data": {"schema": list(schema.get("properties", {}))}}
+        )
+        return fallback
+
+
+async def ask_text(
+    *, system: str, prompt: str, fallback: str, model: str | None = None, effort: str = "low", max_tokens: int = 2048
+) -> str:
+    llm = get_llm()
+    if isinstance(llm, OfflineLLM):
+        return fallback
+    try:
+        resp = await llm.complete(
+            model=model or get_settings().llm_fast_model,
+            system=[{"type": "text", "text": system}],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            effort=effort,
+        )
+        return resp.text or fallback
+    except LLMError:
+        return fallback

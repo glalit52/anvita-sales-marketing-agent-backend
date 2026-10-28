@@ -19,9 +19,23 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, org_id_var
 from app.db.base import utcnow
 from app.db.session import tenant_session
-from app.models import Channel, Contact, Conversation, Event, KnowledgeSource, Message, WebhookEndpoint
+from app.models import (
+    Appointment,
+    Campaign,
+    Channel,
+    Contact,
+    Conversation,
+    Event,
+    KnowledgeSource,
+    Message,
+    Organization,
+    ReviewRequest,
+    WebhookEndpoint,
+)
+from app.services import campaigns, reviews, sequences
 from app.services.agent.runtime import run_reply
 from app.services.channels import SendError, adapter_for
+from app.services.events import emit
 from app.services.knowledge import ingest_source
 from app.services.webhooks_out import PUBLIC_EVENTS, deliver, fanout
 
@@ -43,7 +57,59 @@ def handles(event_type: str) -> Callable[[Handler], Handler]:
 @handles("message.received")
 async def on_message_received(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
     async with tenant_session(org_id) as db:
+        msg = await db.get(Message, uuid.UUID(payload["message_id"]))
+        conv = await db.get(Conversation, uuid.UUID(payload["conversation_id"]))
+        if msg is not None and conv is not None and msg.author_type == "contact":
+            await sequences.on_inbound(db, org_id, conv.contact_id, msg)
+            await db.commit()
         await run_reply(db, org_id, uuid.UUID(payload["conversation_id"]), uuid.UUID(payload["message_id"]))
+        await db.commit()
+
+
+@handles("campaign.send")
+async def on_campaign_send(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        campaign = await db.get(Campaign, uuid.UUID(payload["campaign_id"]), with_for_update=True)
+        if campaign is None:
+            return
+        more = await campaigns.send_batch(db, campaign)
+        if more:
+            emit(db, org_id, "campaign.send", {"campaign_id": campaign.id})
+        await db.commit()
+
+
+@handles("sequence.step")
+async def on_sequence_step(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        await sequences.run_step(db, uuid.UUID(payload["enrollment_id"]), int(payload["position"]))
+        await db.commit()
+
+
+@handles("sequence.classify_reply")
+async def on_classify_reply(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    async with tenant_session(org_id) as db:
+        await sequences.classify_reply(db, uuid.UUID(payload["enrollment_id"]), uuid.UUID(payload["message_id"]))
+        await db.commit()
+
+
+@handles("appointment.completed")
+async def on_appointment_completed(org_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    """Auto review request after a completed visit (Settings → Reviews → automatic requests)."""
+    async with tenant_session(org_id) as db:
+        org = await db.get(Organization, org_id)
+        appt = await db.get(Appointment, uuid.UUID(payload["appointment_id"]))
+        if org is None or appt is None or appt.status != "completed":
+            return
+        cfg = (org.settings or {}).get("reviews", {})
+        if not cfg.get("auto_request", True):
+            return
+        if await db.scalar(select(ReviewRequest.id).where(ReviewRequest.appointment_id == appt.id)):
+            return
+        contact = await db.get(Contact, appt.contact_id)
+        if contact is None:
+            return
+        channel = "whatsapp" if contact.phone else "email"
+        await reviews.send_request(db, org, contact, channel=cfg.get("channel", channel), appointment_id=appt.id)
         await db.commit()
 
 

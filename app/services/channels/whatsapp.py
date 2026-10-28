@@ -91,7 +91,22 @@ class WhatsAppAdapter:
         if not to:
             raise SendError("Contact has no WhatsApp number", retryable=False)
         url = f"{get_settings().whatsapp_graph_url}/{channel.external_id}/messages"
-        body = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": message.body}}
+        tpl = next((a for a in message.attachments or [] if a.get("kind") == "template"), None)
+        if tpl:
+            # Outside the 24h window only Meta-approved templates may be sent.
+            params = [{"type": "text", "text": str(p)} for p in tpl.get("params", [])]
+            body = {
+                "messaging_product": "whatsapp",
+                "to": to,
+                "type": "template",
+                "template": {
+                    "name": tpl["name"],
+                    "language": {"code": tpl.get("language", "en")},
+                    "components": [{"type": "body", "parameters": params}] if params else [],
+                },
+            }
+        else:
+            body = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": message.body}}
         client = self._client or httpx.AsyncClient(timeout=15)
         try:
             resp = await client.post(url, json=body, headers={"Authorization": f"Bearer {token}"})

@@ -6,6 +6,7 @@ from app.api.v1 import (
     calendar,
     contacts,
     conversations,
+    growth,
     ops,
     org,
     payments,
@@ -16,5 +17,19 @@ from app.api.v1 import (
 )
 
 api_router = APIRouter()
-for module in (auth, org, contacts, conversations, sell, calendar, payments, agent, ops, platform, public, webhooks):
+for module in (
+    auth,
+    org,
+    contacts,
+    conversations,
+    sell,
+    growth,
+    calendar,
+    payments,
+    agent,
+    ops,
+    platform,
+    public,
+    webhooks,
+):
     api_router.include_router(module.router)

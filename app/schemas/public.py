@@ -120,3 +120,27 @@ class WebchatMessage(Schema):
     body: str
     card: dict[str, Any] | None
     created_at: datetime
+
+
+class FeedbackPage(Schema):
+    business_name: str
+    first_name: str | None
+    status: str
+    rating: int | None
+    issues: list[str]
+    public_link: str | None
+    suggestions: dict[str, str]
+
+
+class FeedbackRateIn(Schema):
+    rating: int = Field(ge=1, le=5)
+
+
+class FeedbackRateOut(Schema):
+    public_link: str | None
+    suggestions: dict[str, str]
+
+
+class FeedbackPrivateIn(Schema):
+    issues: list[str] = Field(default_factory=list, max_length=10)
+    text: str | None = Field(default=None, max_length=4000)

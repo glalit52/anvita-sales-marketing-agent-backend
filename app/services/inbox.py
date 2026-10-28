@@ -116,8 +116,14 @@ async def create_outbound(
     sources: list[str] | None = None,
     ai_run_id: uuid.UUID | None = None,
     idempotency_key: str | None = None,
+    template: dict[str, Any] | None = None,
+    pause_ai: bool = True,
 ) -> Message:
-    """Write a team/AI/system message. Real sends are queued to the outbox and delivered by the worker."""
+    """Write a team/AI/system message. Real sends are queued to the outbox and delivered by the worker.
+
+    `template` marks a pre-approved template send ({"name", "language", "params"}), which channels with a
+    reply window (WhatsApp) allow outside it. Automated sends (campaigns, sequences) pass pause_ai=False so
+    they don't silence the AI the way a teammate's reply does."""
     if idempotency_key:
         existing = await db.scalar(
             select(Message).where(Message.org_id == conv.org_id, Message.idempotency_key == idempotency_key)
@@ -128,7 +134,8 @@ async def create_outbound(
     deliver = not is_note and not is_draft and author_type != "system"
     if deliver:
         window = adapter_for(conv.channel_type).capabilities.window_hours
-        if window and (conv.last_inbound_at is None or utcnow() - conv.last_inbound_at > timedelta(hours=window)):
+        window_closed = conv.last_inbound_at is None or utcnow() - conv.last_inbound_at > timedelta(hours=window or 0)
+        if window and template is None and window_closed:
             raise Conflict(
                 f"The {window}h reply window on {conv.channel_type} has closed; send an approved template",
                 code="reply_window_closed",
@@ -157,7 +164,9 @@ async def create_outbound(
     if not is_draft:
         conv.last_message_at = now
         conv.last_message_preview = _preview(body)
-    if author_type == "human" and not is_note:
+    if template:
+        msg.attachments = [{"kind": "template", **template}]
+    if author_type == "human" and not is_note and pause_ai:
         # Human in control: a teammate replying pauses the AI on this thread for a while.
         conv.ai_paused_until = now + timedelta(minutes=get_settings().agent_human_pause_minutes)
         conv.unread_count = 0
@@ -165,3 +174,11 @@ async def create_outbound(
     if deliver:
         emit(db, conv.org_id, "message.outbound", {"message_id": msg.id})
     return msg
+
+
+def window_open(conv: Conversation) -> bool:
+    """Whether a free-form message is allowed right now on this conversation's channel."""
+    window = adapter_for(conv.channel_type).capabilities.window_hours
+    if not window:
+        return True
+    return conv.last_inbound_at is not None and utcnow() - conv.last_inbound_at <= timedelta(hours=window)

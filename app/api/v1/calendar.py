@@ -21,6 +21,7 @@ from app.schemas.scheduling import (
 )
 from app.services import scheduling
 from app.services.audit import audit
+from app.services.events import emit
 
 router = APIRouter(tags=["calendar"])
 
@@ -197,6 +198,10 @@ async def update_appointment(
             scheduling.cancel(db, appt, changes.get("cancel_reason"))
         appt.status = changes["status"]
         if appt.status == "completed":
+            delay_h = float(((principal.org.settings or {}).get("reviews") or {}).get("delay_hours", 2))
+            emit(
+                db, principal.org_id, "appointment.completed", {"appointment_id": appt.id}, delay_seconds=delay_h * 3600
+            )
             contact = await db.get(Contact, appt.contact_id)
             if contact and contact.stage in ("new", "qualified", "booked"):
                 contact.stage = "customer"
